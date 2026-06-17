@@ -1,0 +1,57 @@
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  font-family: system-ui, sans-serif;
+  color: #222;
+}
+
+header h1 {
+  margin-bottom: 0.25rem;
+}
+
+header p {
+  color: #666;
+  margin-top: 0;
+}
+
+.drop-zone {
+  border: 2px dashed #aaa;
+  border-radius: 8px;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  margin: 1.5rem 0;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.drop-zone.dragging {
+  border-color: #4a7dff;
+  background-color: #eef3ff;
+}
+
+.file-input-label {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #4a7dff;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.track-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.track-table th,
+.track-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.empty-state {
+  color: #888;
+  text-align: center;
+}
