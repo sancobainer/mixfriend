@@ -1,0 +1,22 @@
+{
+  "Tourist - Bunny.mp3::3438693::1779556223449": {
+    "bpm": 116.8,
+    "key": "Ab",
+    "scale": "minor",
+    "keyStrength": 0.81,
+    "cuePoints": [
+      {
+        "time": 19.9,
+        "strength": 3.82
+      },
+      {
+        "time": 103.99,
+        "strength": 3.8
+      },
+      {
+        "time": 166.05,
+        "strength": 3.83
+      }
+    ]
+  }
+}
