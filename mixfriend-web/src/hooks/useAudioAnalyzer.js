@@ -35,14 +35,12 @@ export function useAudioAnalyzer() {
 
   const analyzeFile = useCallback(
     async (file) => {
-      console.log(`[analyze] ${file.name}: checking cache...`)
       const cached = await getCachedResult(file)
       if (cached) {
         console.log(`[analyze] ${file.name}: cache hit`, cached)
         return cached
       }
-      console.log(`[analyze] ${file.name}: cache miss, decoding audio...`)
-
+      
       const arrayBuffer = await file.arrayBuffer()
       // essentia's RhythmExtractor2013 has no sampleRate parameter - it
       // hardcodes an internal assumption of 44100Hz. If the browser's
@@ -79,7 +77,6 @@ export function useAudioAnalyzer() {
       console.log(`[analyze] ${file.name}: worker finished in ${elapsed}s`, result)
 
       await saveCachedResult(file, result)
-      console.log(`[analyze] ${file.name}: cached result`)
       return result
     },
     [getWorker]

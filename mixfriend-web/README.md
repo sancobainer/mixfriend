@@ -6,12 +6,26 @@ All analysis runs in-browser using [essentia.js](https://mtg.github.io/essentia.
 
 ## Features
 
-- **Drag-and-drop or file-picker upload** of audio files (`src/components/DropZone.jsx`)
-- **BPM detection** with octave-error correction
-- **Musical key detection** (key + scale + confidence score)
-- **Cue point detection** — up to 4 timestamps marking the track's biggest structural/spectral changes, snapped to the nearest beat
+**Import**
+- **File, folder, or drag-and-drop upload** — pick individual files, browse a whole folder (`webkitdirectory`), or drag files/folders in (recursively walks dropped directory trees). Filtered by MIME type with an extension fallback (`src/components/DropZone.jsx`)
+- **Batched analysis** with a small concurrency limit, so dropping a large folder doesn't spike memory
+
+**Per-track analysis**
+- **BPM detection** with octave-error correction (rounded to a whole number)
+- **Musical key detection** — key + scale + confidence score, plus the **Camelot Wheel code** (e.g. `8B`) for harmonic mixing
+- **Cue point detection** — up to 4 timestamps marking the track's biggest structural/spectral changes, snapped to the nearest beat, each with upcoming 8-bar and 16-bar phrase markers
+- **Danceability** score (0–100%)
+- **Beat grid** — full array of detected beat positions across the track
+
+**Mixing / set planning**
+- **Dual-deck player** — two independent waveform decks (A/B) with play/pause, scrub, cue jumping, looping, per-deck volume, and beat/cue overlays (`src/components/Deck.jsx`)
+- **Mixer** — equal-power crossfader between decks, BPM sync (deck B → deck A), and a live harmonic-compatibility badge (`src/components/Mixer.jsx`)
+- **Harmonic compatibility column** in the track list, comparing every track to whatever's loaded on Deck A
+- **Sortable track list** by name, BPM, key, or danceability, with load-to-deck buttons (`src/components/TrackList.jsx`)
+- **DJ-console layout** — fixed console (waveforms on top, deck controls flanking the center mixer) over a scrollable track library
+
+**Persistence**
 - **Result caching** to a JSON file in the repo (`cache/analysis-cache.json`), so re-uploading the same file skips re-analysis
-- **Track list UI** showing BPM, key, and cue points per track (`src/components/TrackList.jsx`)
 
 ## How analysis works
 
@@ -50,8 +64,37 @@ Rather than analyzing the whole track, BPM and key are computed from a **30-seco
 - **BPM**: `RhythmExtractor2013` (`'multifeature'` method, tempo range 40–208 BPM) on the 30s window, run through `correctOctaveError()`, which folds the result into the 90–180 BPM range by doubling/halving. This corrects essentia's most common failure mode (reporting half or double the true tempo). Note: this heuristic assumes the true tempo falls in 90–180 BPM — genres outside that range (e.g. very slow hip-hop, very fast hardcore) would need the bounds adjusted.
 - **Key**: `KeyExtractor` on the same 30s window, returning key, scale (major/minor), and a confidence score.
   - `keyStrength` (0–1) reflects how well the audio matches the detected key's chroma profile. High (~0.7–0.9) means a clear, unambiguous tonal center; low (~0.3–0.5) means weak/ambiguous tonality (common in percussion-heavy or atonal sections) — low-confidence results should be treated with some skepticism.
+  - `camelotKey` translates the detected key/scale into Camelot Wheel notation (e.g. `E major` → `12B`, `A minor` → `8A`), the standard DJ reference for harmonic mixing. Tracks with adjacent Camelot codes (or the same number) mix together harmonically.
+- **Danceability**: `Danceability` (based on Detrended Fluctuation Analysis) on the same 30s window. Essentia's raw output is roughly 0–3 (higher = more danceable); normalized to a 0–100% scale and clamped at 100.
 
-### 4. Caching
+### 4. Phrase markers and beat grid
+
+Two outputs are derived cheaply from the beat grid (the `ticks` from the beat-alignment `RhythmExtractor2013` pass), with no extra analysis cost:
+
+- **Per-cue phrase markers**: each cue point carries `phrase8` and `phrase16` — the timestamps of the next four 8-bar and 16-bar boundaries after that cue. A cue (drop, chorus-in) almost always lands on a phrase boundary, so stepping forward in 8- or 16-beat increments from it yields musically meaningful mix-in points. We expose only a handful of upcoming markers per cue rather than the entire bar grid (a 4.5-minute track has ~146 bars — too many to be useful as a list).
+- **Beat grid** (`beatTicks`): the full array of detected beat timestamps, used to render bar lines on the deck waveforms. (`Array.from` is used when serializing this, because essentia returns a `Float32Array` and a typed array would otherwise be JSON-serialized as a keyed object instead of a real array.)
+
+### 5. Dual-deck player
+
+Two independent decks (`src/components/Deck.jsx`), each backed by its own [wavesurfer.js](https://wavesurfer.xyz/) instance, render a track's waveform with overlays and provide DJ-style transport controls. A track is loaded into a deck via the `→ A` / `→ B` buttons in the track list.
+
+- **Play/pause + scrub**: standard transport, plus click-to-seek anywhere on the waveform.
+- **Cue jumping**: a button per detected cue point seeks the playhead straight to it.
+- **Looping**: "Loop 8" sets an 8-bar loop anchored at the nearest cue at/before the playhead, using that cue's precomputed `phrase8` markers so the loop ends on a phrase boundary. The loop region is resizable.
+- **Per-deck volume**: a volume fader applied live without rebuilding the waveform.
+- **Overlays**: bar grid lines (every 4th beat) and numbered cue markers drawn on each waveform.
+
+Layout-wise, each deck's waveform is rendered into a slot at the top of the console (via a React portal), while its controls render in a column flanking the center mixer — so the wavesurfer instance and all its refs stay owned by one component regardless of where the waveform is displayed.
+
+### 6. Mixer and harmonic compatibility
+
+The mixer (`src/components/Mixer.jsx`) sits between the two decks and coordinates them via imperative handles each deck exposes (`forwardRef`/`useImperativeHandle`):
+
+- **Crossfader**: an equal-power crossfade (`crossfadeGains` in `src/utils/mixer.js`) — at center, both decks play at ~0.71 gain rather than 0.5, so perceived loudness stays roughly constant across the sweep (the sum of squared gains is ~1 throughout). This multiplies with each deck's own volume fader.
+- **BPM sync**: sets deck B's `playbackRate` to `bpmA / bpmB` (`syncRatio` in `src/utils/mixer.js`). This is a simple tempo change that **shifts pitch along with tempo** — true pitch-preserving time-stretch is a larger, deferred feature.
+- **Harmonic compatibility**: `harmonicRelation` (`src/utils/harmonic.js`) compares two Camelot codes and labels the pair `same key`, `relative` (relative major/minor), `adjacent` (±1 on the wheel, wrapping 12↔1), or `clash`. Shown both as a badge in the mixer (Deck A vs Deck B) and as a column in the track list (every track vs Deck A).
+
+### 7. Caching
 
 Results are cached by `name::size::lastModified` key to `cache/analysis-cache.json` via a Vite dev-server middleware (`vite.config.js`, `/api/cache` endpoint). Re-uploading an already-analyzed file returns the cached result instantly instead of re-running analysis.
 
@@ -68,4 +111,22 @@ npm install
 npm run dev
 ```
 
-Drop an audio file onto the page — BPM, key, and cue points will appear in the track list once analysis finishes. Check the browser console for detailed per-stage logs (cache checks, decode info, worker timing, and step-by-step analysis output).
+Drop audio files (or a whole folder) onto the page — BPM, key (with Camelot code), cue points, and danceability appear in the track list once analysis finishes. Use the `→ A` / `→ B` buttons to load a track into either deck, then play, scrub, jump between cue points, loop, and adjust per-deck volume. The mixer between the decks provides the crossfader, BPM sync, and a harmonic-compatibility readout. Check the browser console for detailed per-stage logs (cache checks, decode info, worker timing, and step-by-step analysis output).
+
+## Testing
+
+Pure analysis/mixing logic is extracted into dependency-free modules under `src/utils/` (so it can be tested without loading the essentia.js WASM module, which only runs in a worker/browser) and covered by [Vitest](https://vitest.dev/):
+
+```bash
+npm test          # run once
+npm run test:watch
+```
+
+Current coverage (`src/utils/*.test.js`):
+
+- `analysis.test.js` — BPM octave correction, forward phrase-marker stepping, and Camelot code mapping (including flat→sharp normalization).
+- `harmonic.test.js` — Camelot compatibility relations (same/relative/adjacent/clash, wheel wraparound, malformed input).
+- `mixer.test.js` — equal-power crossfade gains and BPM sync ratio.
+- `normalizeTrack.test.js` — beat-grid normalization (handles the keyed-object shape that old cached entries had).
+
+The wavesurfer-driven decks and the essentia analysis pipeline itself are integration-tested by hand in the browser rather than unit-tested.

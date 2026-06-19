@@ -1,5 +1,10 @@
 import { EssentiaWASM } from 'essentia.js/dist/essentia-wasm.es.js'
 import Essentia from 'essentia.js/dist/essentia.js-core.es.js'
+import {
+  correctOctaveError,
+  getForwardPhraseMarkers,
+  getCamelotCode,
+} from '../utils/analysis'
 
 let essentia = null
 let essentiaReady = null
@@ -19,15 +24,6 @@ async function getEssentia() {
     })
   }
   return essentiaReady
-}
-
-function correctOctaveError(bpm) {
-  const minBpm = 90
-  const maxBpm = 180
-  let corrected = bpm
-  while (corrected < minBpm) corrected *= 2
-  while (corrected > maxBpm) corrected /= 2
-  return corrected
 }
 
 function detectCuePoints(ess, channelData, sampleRate) {
@@ -183,21 +179,22 @@ function detectCuePoints(ess, channelData, sampleRate) {
     return closest
   }
 
-  return selected.map((c) => ({
-    time: Math.round(snapToNearestBeat(c.index * textureWindowSeconds) * 100) / 100,
-    strength: Math.round(c.strength * 100) / 100,
-  }))
+  return {
+    cuePoints: selected.map((c) => ({
+      time: Math.round(snapToNearestBeat(c.index * textureWindowSeconds) * 100) / 100,
+      strength: Math.round(c.strength * 100) / 100,
+    })),
+    beatTicks,
+  }
 }
 
 self.onmessage = async (event) => {
   const { id, channelData, sampleRate } = event.data
 
   try {
-    console.log(`[worker] job ${id}: loading essentia wasm...`)
     const ess = await getEssentia()
-    console.log(`[worker] job ${id}: essentia ready, detecting cue points (${channelData.length} samples)...`)
-
-    const cuePoints = detectCuePoints(ess, channelData, sampleRate)
+    
+    const { cuePoints, beatTicks } = detectCuePoints(ess, channelData, sampleRate)
     console.log(`[worker] job ${id}: found ${cuePoints.length} cue points`, cuePoints)
 
     // Run BPM/key on a 30s window starting just after the strongest cue
@@ -217,14 +214,12 @@ self.onmessage = async (event) => {
     )
     const endSample = Math.min(channelData.length, startSample + Math.round(analysisDuration * sampleRate))
     const analysisChunk = channelData.subarray(startSample, endSample)
-    console.log(`[worker] job ${id}: analyzing ${startTime.toFixed(1)}s-${(startTime + analysisDuration).toFixed(1)}s window for bpm/key...`)
-
+    
     const vectorSignal = ess.arrayToVector(analysisChunk)
 
     const rhythm = ess.RhythmExtractor2013(vectorSignal, 208, 'multifeature', 40)
     const bpm = correctOctaveError(rhythm.bpm)
-    console.log(`[worker] job ${id}: bpm=${bpm} (raw=${rhythm.bpm})`)
-
+    
     const keyResult = ess.KeyExtractor(
       vectorSignal,
       true,
@@ -242,17 +237,40 @@ self.onmessage = async (event) => {
       'cosine',
       'hann'
     )
-    console.log(`[worker] job ${id}: key=${keyResult.key} ${keyResult.scale} (strength=${keyResult.strength.toFixed(2)})`)
+    const camelotKey = getCamelotCode(keyResult.key, keyResult.scale)
+
+    const danceabilityResult = ess.Danceability(vectorSignal, 8800, 310, sampleRate, 1.1)
+    // Raw value is "usually 0-3" per essentia's docs (higher = more
+    // danceable). Normalized to a 0-100% scale for a friendlier UI display,
+    // clamped in case a track scores just above the usual ceiling.
+    const danceability = Math.min(100, Math.round((danceabilityResult.danceability / 3) * 100))
+
+    console.log(
+      `[worker] job ${id}: bpm=${bpm} key=${keyResult.key} ${keyResult.scale} (${camelotKey}) strength=${keyResult.strength.toFixed(2)} danceability=${danceability}%`
+    )
+
+    const cuePointsWithPhrasing = cuePoints.map((cue) => ({
+      ...cue,
+      phrase8: getForwardPhraseMarkers(beatTicks, cue.time, 8, 4),
+      phrase16: getForwardPhraseMarkers(beatTicks, cue.time, 16, 4),
+    }))
 
     self.postMessage({
       id,
       status: 'done',
       result: {
-        bpm: Math.round(bpm * 10) / 10,
+        bpm: Math.round(bpm),
         key: keyResult.key,
         scale: keyResult.scale,
+        camelotKey,
         keyStrength: Math.round(keyResult.strength * 100) / 100,
-        cuePoints,
+        danceability,
+        cuePoints: cuePointsWithPhrasing,
+        // Array.from is required here: beatTicks is a Float32Array, and
+        // .map() on a typed array returns another typed array, which JSON
+        // serializes as a keyed object ({"0": ..., "1": ...}) instead of a
+        // real array - breaking .length/index access on the consumer side.
+        beatTicks: Array.from(beatTicks, (t) => Math.round(t * 1000) / 1000),
       },
     })
   } catch (err) {
